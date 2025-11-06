@@ -1,0 +1,1423 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>リアルタイム地震システム V3.0</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        /* --- 全体リセットと基本設定 --- */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Noto Sans JP', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0d1117; /* GitHub Dark Default */
+            color: #c9d1d9; /* Light text on dark background */
+            overflow: hidden;
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        /* --- ローディング/エラー画面 --- */
+        .loading-screen, .error-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(13, 17, 23, 0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            transition: opacity 0.3s ease-in-out;
+        }
+
+        .loading-screen.hide, .error-overlay:not(.show) {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .loading-spinner {
+            border: 4px solid rgba(201, 209, 217, 0.3);
+            border-top: 4px solid #2196f3;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+
+        .loading-text, .error-title, .error-message, .error-countdown {
+            margin-top: 20px;
+            font-size: 1.1rem;
+            color: #c9d1d9;
+        }
+        .error-title {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #f85149;
+        }
+        .error-countdown {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #6a737d;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* --- アプリケーションコンテナ --- */
+        .app-container {
+            display: flex;
+            flex: 1; /* 親要素いっぱいに広がる */
+        }
+
+        /* --- マップエリア --- */
+        .map-area {
+            flex-grow: 1; /* 残りのスペースを全て占有 */
+            position: relative;
+            background: #000; /* 地図ロード中の背景 */
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+            border-radius: 8px; /* 角を丸める */
+        }
+        
+        /* マップ上のコントロールボタン */
+        .map-controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 600; /* EEWより下に */
+        }
+
+        .map-control-btn {
+            background: rgba(33, 150, 243, 0.9); /* 青色を強調 */
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 25px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            transition: all 0.2s ease-in-out;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .map-control-btn:hover {
+            background: #1976d2; /* 濃い青 */
+            transform: translateY(-2px) translateX(-50%);
+            box-shadow: 0 6px 15px rgba(0,0,0,0.4);
+        }
+        .map-control-btn.active {
+            background: #f44336; /* 波動中は赤 */
+        }
+        .map-control-btn.active:hover {
+            background: #d32f2f;
+        }
+
+        /* --- 緊急地震速報オーバーレイ --- */
+        .eew-overlay {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90%;
+            max-width: 600px;
+            background: linear-gradient(45deg, rgba(255, 0, 0, 0.95), rgba(200, 0, 0, 0.95));
+            border-radius: 16px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            color: white;
+            z-index: 1000;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.6);
+            animation: eewPulse 1.5s infinite alternate; /* 緩やかなアニメーション */
+            border: 2px solid white; /* 視認性向上のための白枠 */
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;
+        }
+
+        .eew-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        @keyframes eewPulse {
+            0% { box-shadow: 0 8px 20px rgba(255,0,0,0.6); }
+            100% { box-shadow: 0 8px 30px rgba(255,0,0,0.9); }
+        }
+
+        .eew-title {
+            font-size: 2.2rem;
+            font-weight: bold;
+            margin-bottom: 15px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+
+        .eew-countdown {
+            font-size: 4rem;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #ffe082; /* 明るい黄色 */
+            text-shadow: 2px 2px 5px rgba(0,0,0,0.6);
+        }
+
+        .eew-info div {
+            font-size: 1.1rem;
+            line-height: 1.5;
+            margin-top: 5px;
+        }
+        .eew-info strong {
+            color: #fdd835; /* 明るい黄色 */
+        }
+
+        /* --- サイドパネル --- */
+        .side-panel {
+            width: 380px; /* 固定幅 */
+            background: #161b22; /* サイドバーの背景色 */
+            display: flex;
+            flex-direction: column;
+            border-left: 1px solid #30363d;
+            box-shadow: -4px 0 10px rgba(0,0,0,0.2);
+            z-index: 500;
+        }
+
+        /* ヘッダーの場所移動 */
+        .side-header {
+            background: linear-gradient(135deg, #1a237e 0%, #0d47a1 100%);
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .side-header h1 {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #fff;
+        }
+        .location-display {
+            background: rgba(255,255,255,0.15);
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #fff;
+        }
+
+        /* タブナビゲーション */
+        .tab-nav {
+            display: flex;
+            background: #0d1117; /* ベース背景 */
+            border-bottom: 1px solid #30363d;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 15px 0;
+            background: none;
+            border: none;
+            color: #6a737d; /* 非アクティブタブの色 */
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            outline: none;
+        }
+
+        .tab-btn::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 0;
+            height: 3px;
+            background-color: #2196f3;
+            transition: width 0.3s ease;
+        }
+
+        .tab-btn.active {
+            color: #c9d1d9; /* アクティブタブの色 */
+        }
+        .tab-btn.active::after {
+            width: 100%;
+        }
+        .tab-btn:hover:not(.active) {
+            color: #8b949e;
+        }
+
+        /* 各パネルコンテナ */
+        .panel-content-wrapper {
+            flex: 1;
+            overflow-y: auto; /* 各パネル内でスクロール */
+            padding: 15px;
+        }
+
+        /* タイムラインパネル */
+        .timeline-panel {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .timeline-filter {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #30363d;
+            flex-wrap: wrap; /* 小さい画面で折り返す */
+        }
+
+        .timeline-filter select {
+            flex: 1;
+            min-width: 120px;
+            padding: 8px;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            background: #0d1117; /* 入力フィールドの背景 */
+            color: #c9d1d9;
+            font-size: 0.9rem;
+            appearance: none; /* デフォルトの矢印を非表示 */
+            background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23c9d1d9%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13.2-5.4H18.9c-5%200-9.3%201.8-13.2%205.4A17.6%2017.6%200%200%200%200%2082.2c0%204.8%201.8%209.1%205.4%2013.2l128.8%20128.8c3.9%203.9%208.7%205.9%2013.2%205.9s9.3-2%2013.2-5.9L287%2095.4c3.9-3.9%205.4-8.7%205.4-13.2%200-4.8-1.8-9.1-5.4-13.2z%22%2F%3E%3C%2Fsvg%3E');
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            background-size: 12px;
+        }
+
+        .timeline-list {
+            flex: 1;
+        }
+
+        .timeline-item {
+            background: #0d1117; /* タイムラインアイテムの背景 */
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 12px;
+            border-left: 4px solid transparent; /* 選択時の色 */
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .timeline-item:hover {
+            background: #1a1f24;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+
+        .timeline-item.selected {
+            border-left-color: #2196f3; /* 選択中のアイテム */
+            background: #1a1f24;
+        }
+
+        .timeline-time {
+            font-size: 0.8rem;
+            color: #6a737d;
+            margin-bottom: 6px;
+        }
+
+        .timeline-title {
+            font-size: 1.1rem;
+            font-weight: bold;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+        }
+
+        .magnitude-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 5px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            margin-right: 10px;
+            min-width: 60px;
+            text-align: center;
+            color: white; /* バッジの文字色 */
+        }
+
+        .mag-high { background: #9c27b0; } /* M6+ */
+        .mag-medium { background: #f44336; } /* M5.0-5.9 */
+        .mag-low { background: #ff9800; } /* M3.0-4.9 */
+        .mag-minor { background: #2196f3; font-size: 0.9rem;} /* M<3.0 */
+
+        .timeline-content {
+            font-size: 0.9rem;
+            color: #8b949e;
+            line-height: 1.5;
+        }
+        .tsunami-badge-timeline {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            margin-left: 8px;
+            color: white;
+            background: #ff9800; /* デフォルトは注意報 */
+        }
+        .tsunami-badge-timeline.alert {
+            background: #f44336; /* 警報以上は赤 */
+        }
+
+        /* 地点選択パネル */
+        .location-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .location-card {
+            background: #0d1117;
+            border-radius: 12px;
+            padding: 15px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 2px solid transparent;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .location-card:hover {
+            background: #1a1f24;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+
+        .location-card.selected {
+            border-color: #2196f3;
+            background: rgba(33, 150, 243, 0.15);
+        }
+
+        .location-name {
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #c9d1d9;
+        }
+
+        .location-stats {
+            font-size: 0.85rem;
+            color: #6a737d;
+        }
+
+        /* 波動情報パネルと津波情報パネル */
+        .info-card {
+            background: #0d1117;
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border: 1px solid #30363d;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .info-card-title {
+            font-size: 1.1rem;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #2196f3;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .info-card-title.tsunami-warning {
+            color: #ff9800;
+        }
+        .info-card-title.tsunami-alert {
+            color: #f44336;
+            animation: textPulse 1.5s infinite alternate;
+        }
+        @keyframes textPulse {
+            0% { text-shadow: none; }
+            100% { text-shadow: 0 0 8px rgba(244, 67, 54, 0.7); }
+        }
+
+        .wave-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .wave-stat {
+            background: #161b22; /* 統計カードの背景 */
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+            border: 1px solid #30363d;
+        }
+
+        .wave-stat-label {
+            font-size: 0.75rem;
+            color: #6a737d;
+            margin-bottom: 4px;
+        }
+
+        .wave-stat-value {
+            font-size: 1.6rem;
+            font-weight: bold;
+            color: #2196f3;
+        }
+        .wave-stat-value.intensity-critical {
+             color: #f44336;
+        }
+
+        /* 津波情報リスト */
+        #tsunamiStatus {
+            font-size: 1.1rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #c9d1d9;
+        }
+        #tsunamiStatus.warning { color: #ff9800; }
+        #tsunamiStatus.alert { color: #f44336; animation: textPulse 1.5s infinite alternate; }
+
+        .tsunami-forecast-list {
+            list-style: none;
+            padding-left: 0;
+            font-size: 0.9rem;
+            color: #8b949e;
+        }
+
+        .tsunami-region-item {
+            padding: 8px 0;
+            border-bottom: 1px dashed #30363d;
+        }
+
+        .tsunami-region-item:last-child {
+            border-bottom: none;
+        }
+        .tsunami-region-item strong {
+            color: #c9d1d9;
+        }
+
+        /* 設定パネル */
+        .settings-panel {
+            padding: 15px;
+            display: none; /* デフォルト非表示 */
+        }
+
+        .settings-item {
+            margin-bottom: 15px;
+            padding: 15px;
+            background: #0d1117;
+            border-radius: 10px;
+            border: 1px solid #30363d;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .settings-item label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-weight: bold;
+            margin-bottom: 8px;
+            color: #c9d1d9;
+        }
+        
+        /* カスタムスイッチ（トグル） */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 45px;
+            height: 25px;
+            flex-shrink: 0; /* ラベルのテキストが長いときに縮まないように */
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #6a737d; /* オフの状態の色 */
+            transition: .4s;
+            border-radius: 25px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 17px;
+            width: 17px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: #2196F3; /* オンに状態の色 */
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(20px);
+        }
+        .settings-description {
+            font-size: 0.85rem;
+            color: #8b949e;
+            margin-top: 5px;
+        }
+
+
+        /* --- 更新ボタン --- */
+        .bottom-controls {
+            padding: 15px;
+            border-top: 1px solid #30363d;
+            background: #161b22;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .refresh-btn {
+            background: #444c56; /* 更新ボタンの色 */
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 25px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .refresh-btn:hover {
+            background: #6a737d;
+            transform: translateY(-1px);
+        }
+
+        /* --- スクロールバー --- */
+        .panel-content-wrapper::-webkit-scrollbar {
+            width: 8px;
+        }
+        .panel-content-wrapper::-webkit-scrollbar-track {
+            background: #161b22;
+        }
+        .panel-content-wrapper::-webkit-scrollbar-thumb {
+            background: #30363d;
+            border-radius: 4px;
+        }
+        .panel-content-wrapper::-webkit-scrollbar-thumb:hover {
+            background: #444c56;
+        }
+
+        /* --- レスポンシブデザイン --- */
+        @media (max-width: 768px) {
+            .app-container {
+                flex-direction: column;
+            }
+            .side-panel {
+                width: 100%;
+                height: 50vh; /* モバイルでは半分表示 */
+                border-left: none;
+                border-top: 1px solid #30363d;
+            }
+            .map-area {
+                height: 50vh; /* モバイルでは半分表示 */
+            }
+            .eew-overlay {
+                width: 95%; /* モバイルでさらに広く */
+                top: 10px;
+                padding: 15px;
+            }
+            .eew-title {
+                font-size: 1.8rem;
+            }
+            .eew-countdown {
+                font-size: 3rem;
+            }
+            .eew-info div {
+                font-size: 0.9rem;
+            }
+            .map-controls {
+                bottom: 10px;
+            }
+            .map-control-btn {
+                padding: 8px 15px;
+                font-size: 0.9rem;
+            }
+            .timeline-filter {
+                flex-direction: column;
+            }
+            .timeline-filter select {
+                width: 100%;
+                min-width: unset;
+            }
+            .location-grid {
+                grid-template-columns: 1fr; /* 1列にする */
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="loading-screen" id="loadingScreen">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">地震情報を読み込んでいます...</div>
+    </div>
+
+    <div class="error-overlay" id="errorOverlay">
+        <div class="error-box">
+            <div class="error-icon">⚠️</div>
+            <div class="error-title">接続エラー</div>
+            <div class="error-message" id="errorMessage">データの取得に失敗しました</div>
+            <div class="error-countdown" id="errorCountdown">5</div>
+            <div style="color: #7a8599; margin-top: 10px;">秒後に再接続します</div>
+        </div>
+    </div>
+
+    <div class="app-container">
+        <div class="map-area">
+            <div id="map"></div>
+            
+            <div class="eew-overlay" id="eewOverlay">
+                <div class="eew-title">⚠️ 緊急地震速報</div>
+                <div class="eew-countdown" id="eewCountdown">--</div>
+                <div class="eew-info">
+                    <div>予想震度: <strong id="eewIntensity">--</strong></div>
+                    <div>震源: <strong id="eewEpicenter">--</strong></div>
+                    <div>マグニチュード: <strong id="eewMagnitude">--</strong></div>
+                </div>
+            </div>
+
+            <div class="map-controls">
+                <button class="map-control-btn" onclick="toggleWaveSimulation()" id="waveBtn">
+                    <span id="waveBtnIcon">🌊</span> <span id="waveBtnText">波動シミュレーション</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="side-panel">
+            <div class="side-header">
+                <h1>リアルタイム地震防災情報</h1>
+                <div class="location-display">
+                    <span>📍</span>
+                    <span id="currentLocation">東京</span>
+                </div>
+            </div>
+
+            <div class="tab-nav">
+                <button class="tab-btn active" onclick="switchTab('timeline')">📋 タイムライン</button>
+                <button class="tab-btn" onclick="switchTab('location')">📍 地点詳細</button>
+                <button class="tab-btn" onclick="switchTab('settings')">⚙️ 設定</button>
+            </div>
+
+            <div class="panel-content-wrapper">
+                <div class="timeline-panel" id="timelinePanel">
+                    <div class="timeline-filter">
+                        <select id="magnitudeFilter" onchange="filterTimeline()">
+                            <option value="0">Mすべての地震</option>
+                            <option value="3">M3.0以上</option>
+                            <option value="5">M5.0以上</option>
+                            <option value="6">M6.0以上</option>
+                        </select>
+                        <select id="tsunamiFilter" onchange="filterTimeline()">
+                            <option value="0">津波情報すべて</option>
+                            <option value="1">津波注意報以上</option>
+                            <option value="3">津波警報以上</option>
+                        </select>
+                    </div>
+                    <div class="timeline-list" id="timelineList">
+                        </div>
+                </div>
+
+                <div class="panel-content-item" id="locationPanel" style="display: none;">
+                    <div class="location-grid">
+                        <div class="location-card" onclick="setLocation('札幌', 43.06, 141.35)">
+                            <div class="location-name">札幌</div>
+                            <div class="location-stats">北海道</div>
+                        </div>
+                        <div class="location-card selected" onclick="setLocation('東京', 35.68, 139.69)">
+                            <div class="location-name">東京</div>
+                            <div class="location-stats">関東</div>
+                        </div>
+                        <div class="location-card" onclick="setLocation('名古屋', 35.18, 136.91)">
+                            <div class="location-name">名古屋</div>
+                            <div class="location-stats">東海</div>
+                        </div>
+                        <div class="location-card" onclick="setLocation('鹿児島', 31.60, 130.56)">
+                            <div class="location-name">鹿児島</div>
+                            <div class="location-stats">九州</div>
+                        </div>
+                    </div>
+
+                    <div class="info-card">
+                        <div class="info-card-title">🌊 波動到達予測</div>
+                        <div class="wave-stats">
+                            <div class="wave-stat">
+                                <div class="wave-stat-label">P波到達</div>
+                                <div class="wave-stat-value" id="pWaveTime">--</div>
+                            </div>
+                            <div class="wave-stat">
+                                <div class="wave-stat-label">S波到達</div>
+                                <div class="wave-stat-value" id="sWaveTime">--</div>
+                            </div>
+                            <div class="wave-stat">
+                                <div class="wave-stat-label">予想震度</div>
+                                <div class="wave-stat-value" id="estimatedIntensity">--</div>
+                            </div>
+                            <div class="wave-stat">
+                                <div class="wave-stat-label">距離</div>
+                                <div class="wave-stat-value" id="distanceValue">--</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="info-card" id="tsunamiPanel" style="display: none;">
+                        <div class="info-card-title tsunami-warning" id="tsunamiCardTitle">🌊 津波情報</div>
+                        <div id="tsunamiStatus" style="font-size: 1.1rem; font-weight: bold; margin-bottom: 10px;">情報なし</div>
+                        <ul class="tsunami-forecast-list" id="tsunamiForecastList">
+                            </ul>
+                    </div>
+                </div>
+
+                <div class="panel-content-item" id="settingsPanel" style="display: none;">
+                    <div class="settings-item">
+                        <label for="eewAlertToggle">
+                            <span>🚨 EEW視覚アラート</span>
+                            <span class="switch">
+                                <input type="checkbox" id="eewAlertToggle" checked>
+                                <span class="slider"></span>
+                            </span>
+                        </label>
+                        <div class="settings-description">予想震度4以上で画面中央に緊急地震速報を表示します。</div>
+                    </div>
+                    
+                    <div class="settings-item">
+                        <label for="tsunamiAlertToggle">
+                            <span>🌊 津波警報アラート</span>
+                            <span class="switch">
+                                <input type="checkbox" id="tsunamiAlertToggle" checked>
+                                <span class="slider"></span>
+                            </span>
+                        </label>
+                        <div class="settings-description">津波警報以上の場合、地点詳細パネル内の津波情報が点滅します。</div>
+                    </div>
+                    <div class="settings-item">
+                        <label for="tsunamiMapOverlayToggle">
+                            <span>🌊 津波予報マップ表示</span>
+                            <span class="switch">
+                                <input type="checkbox" id="tsunamiMapOverlayToggle">
+                                <span class="slider"></span>
+                            </span>
+                        </label>
+                        <div class="settings-description">地図上に津波予報・警報の対象地域を色分けして表示します。</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bottom-controls">
+                <button class="refresh-btn" onclick="fetchEarthquakes()">
+                    <span class="refresh-icon">🔄</span> 最新情報に更新
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <script>
+        let map, homeMarker;
+        let earthquakes = []; // 全地震データ (P2P地震情報APIから取得)
+        let selectedEarthquake = null; // 現在選択中の地震
+        let homeLocation = { name: '東京', lat: 35.68, lon: 139.69 }; // ユーザー設定地点
+        let markers = []; // 地図上の地震マーカー
+        let pCircle, sCircle, waveInterval; // 波動シミュレーション関連
+        let isSimulating = false; // 波動シミュレーション中フラグ
+        let tsunamiPolygonLayer; // 津波予報ポリゴンレイヤー
+
+        // 【定数】P波・S波速度, 津波カテゴリー
+        const P_SPEED = 7; // km/s
+        const S_SPEED = 4; // km/s
+        const TSUNAMI_CATEGORIES = {
+            1: { name: '津波注意報', color: '#ff9800' },
+            2: { name: '津波予報', color: '#ff9800' }, // 注意報と同じ色だが、API上区別される
+            3: { name: '津波警報', color: '#f44336' },
+            4: { name: '大津波警報', color: '#9c27b0' }
+        };
+
+        /* --- 初期化 --- */
+        function initMap() {
+            map = L.map('map', { zoomControl: false, attributionControl: false }).setView([36.5, 138], 6);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
+            L.control.zoom({ position: 'bottomright' }).addTo(map); // ズームコントロール
+            L.control.attribution({ position: 'bottomleft' }).addTo(map); // 著作権表示
+            updateHomeMarker();
+
+            // 津波マップオーバーレイ設定の変更を監視
+            document.getElementById('tsunamiMapOverlayToggle').addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    if (selectedEarthquake) displayTsunamiMapOverlay(selectedEarthquake);
+                } else {
+                    removeTsunamiMapOverlay();
+                }
+            });
+        }
+
+        /* --- ユーザー設定地点マーカー --- */
+        function updateHomeMarker() {
+            if (homeMarker) map.removeLayer(homeMarker);
+            const icon = L.divIcon({
+                html: '<div style="background:#2196f3;border:3px solid #fff;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,0.4)">🏠</div>',
+                className: '',
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            });
+            homeMarker = L.marker([homeLocation.lat, homeLocation.lon], { icon }).addTo(map);
+        }
+
+        /* --- 地点選択 --- */
+        function setLocation(name, lat, lon) {
+            homeLocation = { name, lat, lon };
+            document.getElementById('currentLocation').textContent = name;
+            
+            document.querySelectorAll('.location-card').forEach(c => c.classList.remove('selected'));
+            const clickedCard = event.target.closest('.location-card');
+            if (clickedCard) clickedCard.classList.add('selected');
+
+            updateHomeMarker();
+            map.setView([lat, lon], 8);
+            if (selectedEarthquake) calculateArrival(); // 地点変更で予測を再計算
+        }
+
+        /* --- タブ切り替え --- */
+        function switchTab(tab) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            // イベントのターゲットまたはプログラムで指定されたタブをアクティブにする
+            if (event && event.target.classList.contains('tab-btn')) {
+                event.target.classList.add('active');
+            } else {
+                document.querySelector(`.tab-btn[onclick*="'${tab}'"]`).classList.add('active');
+            }
+
+            document.querySelectorAll('.panel-content-item').forEach(panel => panel.style.display = 'none');
+            document.getElementById('timelinePanel').style.display = 'none'; // timelinePanelはflexなので個別に制御
+
+            if (tab === 'timeline') {
+                document.getElementById('timelinePanel').style.display = 'flex';
+            } else if (tab === 'location') {
+                document.getElementById('locationPanel').style.display = 'block';
+            } else if (tab === 'settings') {
+                document.getElementById('settingsPanel').style.display = 'block';
+            }
+        }
+
+        /* --- 距離計算 --- */
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // 地球の半径 (km)
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        }
+
+        /* --- 予想震度計算 (簡易モデル) --- */
+        function estimateIntensity(mag, dist) {
+            // 簡易的な距離減衰モデル（目安として利用）
+            if (dist < 1) dist = 1; // 震源が非常に近い場合の発散を防ぐ
+            const i = mag - 1.85 * Math.log10(dist) - 0.0028 * dist + 1.5;
+            if (i < 0.5) return '1未満';
+            if (i < 1.5) return '1';
+            if (i < 2.5) return '2';
+            if (i < 3.5) return '3';
+            if (i < 4.5) return '4';
+            if (i < 5.0) return '5弱';
+            if (i < 5.5) return '5強';
+            if (i < 6.0) return '6弱';
+            if (i < 6.5) return '6強';
+            return '7';
+        }
+        // 予想震度を数値に変換するヘルパー関数
+        function getNumericalIntensity(intensityString) {
+            switch (intensityString) {
+                case '1未満': return 0;
+                case '1': return 1;
+                case '2': return 2;
+                case '3': return 3;
+                case '4': return 4;
+                case '5弱': return 5.0;
+                case '5強': return 5.5;
+                case '6弱': return 6.0;
+                case '6強': return 6.5;
+                case '7': return 7;
+                default: return 0;
+            }
+        }
+
+        /* --- 波動到達予測とEEW表示 --- */
+        let eewTimeout;
+        function calculateArrival() {
+            if (!selectedEarthquake?.earthquake?.hypocenter) {
+                // 地震情報がない場合はリセット
+                document.getElementById('pWaveTime').textContent = '--';
+                document.getElementById('sWaveTime').textContent = '--';
+                document.getElementById('estimatedIntensity').textContent = '--';
+                document.getElementById('distanceValue').textContent = '--';
+                document.getElementById('estimatedIntensity').classList.remove('intensity-critical');
+                hideEEW();
+                return;
+            }
+
+            const h = selectedEarthquake.earthquake.hypocenter;
+            const dist = calculateDistance(h.latitude, h.longitude, homeLocation.lat, homeLocation.lon);
+            
+            const pTime = dist / P_SPEED;
+            const sTime = dist / S_SPEED;
+            const intensity = estimateIntensity(h.magnitude, dist);
+            const numericalIntensity = getNumericalIntensity(intensity);
+
+            document.getElementById('pWaveTime').textContent = pTime.toFixed(1) + '秒';
+            document.getElementById('sWaveTime').textContent = sTime.toFixed(1) + '秒';
+            document.getElementById('estimatedIntensity').textContent = intensity;
+            document.getElementById('distanceValue').textContent = dist.toFixed(0) + 'km';
+            
+            if (numericalIntensity >= 5.0) { // 震度5弱以上で強調
+                document.getElementById('estimatedIntensity').classList.add('intensity-critical');
+            } else {
+                document.getElementById('estimatedIntensity').classList.remove('intensity-critical');
+            }
+
+            // 緊急地震速報表示 (設定でONかつ条件を満たす場合)
+            const isAlertEnabled = document.getElementById('eewAlertToggle').checked;
+            if (isAlertEnabled && sTime > 0 && sTime < 60 && numericalIntensity >= 4.0) {
+                showEEW(sTime, intensity, h.name, h.magnitude);
+            } else {
+                hideEEW();
+            }
+        }
+
+        function showEEW(seconds, intensity, epicenter, magnitude) {
+            const overlay = document.getElementById('eewOverlay');
+            overlay.classList.add('active');
+            document.getElementById('eewIntensity').textContent = intensity;
+            document.getElementById('eewEpicenter').textContent = epicenter;
+            document.getElementById('eewMagnitude').textContent = 'M' + magnitude.toFixed(1);
+            document.getElementById('eewCountdown').textContent = '主要動まで ' + seconds.toFixed(0) + '秒';
+
+            clearTimeout(eewTimeout);
+            eewTimeout = setTimeout(hideEEW, (seconds + 5) * 1000); // 揺れ到達後も数秒表示
+        }
+
+        function hideEEW() {
+            document.getElementById('eewOverlay').classList.remove('active');
+        }
+
+        /* --- 地図上の地震マーカー --- */
+        function updateMarkers() {
+            markers.forEach(m => map.removeLayer(m));
+            markers = [];
+            earthquakes.forEach(eq => {
+                const h = eq.earthquake.hypocenter;
+                if (!h?.latitude) return;
+                const mag = h.magnitude || 0;
+                
+                // フィルターの条件を満たさない場合は表示しない
+                const minMag = parseFloat(document.getElementById('magnitudeFilter').value);
+                if (mag < minMag) return;
+
+                const minTsunamiGrade = parseInt(document.getElementById('tsunamiFilter').value);
+                if (minTsunamiGrade > 0 && eq.tsunami) {
+                    const maxGrade = eq.tsunami.regions.reduce((max, r) => Math.max(max, r.grade), 0);
+                    if (maxGrade < minTsunamiGrade) return;
+                } else if (minTsunamiGrade > 0 && !eq.tsunami) {
+                    return;
+                }
+
+                const color = mag >= 6 ? '#9c27b0' : mag >= 5 ? '#f44336' : mag >= 3 ? '#ff9800' : '#2196f3';
+                const size = 10 + Math.min(mag, 7) * 3; // サイズを少し大きく調整
+                const icon = L.divIcon({
+                    html: `<div style="background:${color};border:2px solid #fff;border-radius:50%;width:${size}px;height:${size}px;box-shadow:0 2px 8px rgba(0,0,0,0.3)"></div>`,
+                    className: '',
+                    iconSize: [size, size],
+                    iconAnchor: [size/2, size/2]
+                });
+                const marker = L.marker([h.latitude, h.longitude], { icon })
+                    .addTo(map)
+                    .on('click', () => selectEarthquake(eq));
+                markers.push(marker);
+            });
+        }
+
+        /* --- 地震選択時の処理 --- */
+        function selectEarthquake(eq) {
+            selectedEarthquake = eq;
+            calculateArrival();
+            displayTsunamiInfo(eq);
+            updateMarkers(); // マーカーの見た目を更新
+
+            // タイムラインの選択状態を更新
+            document.querySelectorAll('.timeline-item').forEach(item => item.classList.remove('selected'));
+            const selectedItem = document.getElementById(`eq-item-${eq.id}`);
+            if (selectedItem) selectedItem.classList.add('selected');
+
+            stopWave(); // 地震を選択したら波動を停止
+
+            if (eq.earthquake.hypocenter?.latitude) {
+                map.setView([eq.earthquake.hypocenter.latitude, eq.earthquake.hypocenter.longitude], 9);
+            }
+
+            // 津波マップオーバーレイの表示/非表示を更新
+            if (document.getElementById('tsunamiMapOverlayToggle').checked) {
+                displayTsunamiMapOverlay(eq);
+            } else {
+                removeTsunamiMapOverlay();
+            }
+        }
+
+        /* --- 波動シミュレーション --- */
+        function toggleWaveSimulation() {
+            if (!selectedEarthquake) return alert('まず地震を選択してください。');
+            isSimulating = !isSimulating;
+            const waveBtn = document.getElementById('waveBtn');
+            const waveBtnIcon = document.getElementById('waveBtnIcon');
+            const waveBtnText = document.getElementById('waveBtnText');
+
+            if (isSimulating) {
+                waveBtn.classList.add('active');
+                waveBtnIcon.textContent = '⏸️';
+                waveBtnText.textContent = 'シミュレーション停止';
+                startWave();
+            } else {
+                waveBtn.classList.remove('active');
+                waveBtnIcon.textContent = '🌊';
+                waveBtnText.textContent = '波動シミュレーション';
+                stopWave();
+            }
+        }
+        
+        let animationFrameId; // requestAnimationFrame のID
+        function startWave() {
+            stopWave();
+            const h = selectedEarthquake.earthquake.hypocenter;
+            if (!h?.latitude) return;
+            const latlng = [h.latitude, h.longitude];
+
+            pCircle = L.circle(latlng, { radius: 0, color: '#ff9800', weight: 3, fillOpacity: 0.1, dashArray: '10,10', interactive: false }).addTo(map);
+            sCircle = L.circle(latlng, { radius: 0, color: '#f44336', weight: 4, fillOpacity: 0.15, dashArray: '15,10', interactive: false }).addTo(map);
+
+            startTime = Date.now();
+            function animateWaves() {
+                const t = (Date.now() - startTime) / 1000;
+                const pRadius = t * P_SPEED * 1000;
+                const sRadius = t * S_SPEED * 1000;
+
+                pCircle.setRadius(pRadius);
+                sCircle.setRadius(sRadius);
+
+                animationFrameId = requestAnimationFrame(animateWaves);
+            }
+            animationFrameId = requestAnimationFrame(animateWaves);
+        }
+
+        function stopWave() {
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            if (pCircle) map.removeLayer(pCircle);
+            if (sCircle) map.removeLayer(sCircle);
+            pCircle = sCircle = null; // リソースを解放
+            animationFrameId = null;
+        }
+
+        /* --- タイムライン表示 --- */
+        function displayTimeline(eqs) {
+            const timelineList = document.getElementById('timelineList');
+            const minMag = parseFloat(document.getElementById('magnitudeFilter').value);
+            const minTsunamiGrade = parseInt(document.getElementById('tsunamiFilter').value);
+
+            const filteredEqs = eqs.filter(eq => {
+                const mag = eq.earthquake.hypocenter?.magnitude || 0;
+                if (mag < minMag) return false;
+
+                if (minTsunamiGrade > 0) {
+                    if (eq.tsunami) {
+                        const maxGrade = eq.tsunami.regions.reduce((max, r) => Math.max(max, r.grade), 0);
+                        if (maxGrade < minTsunamiGrade) return false;
+                    } else { // 津波情報フィルターがあるのに情報がない場合は非表示
+                        return false;
+                    }
+                }
+                return true;
+            });
+
+            if (!filteredEqs?.length) {
+                timelineList.innerHTML = '<div style="text-align:center;padding:40px;color:#6a737d">該当する地震情報がありません</div>';
+                return;
+            }
+
+            timelineList.innerHTML = filteredEqs.map(eq => {
+                const e = eq.earthquake;
+                const mag = e.hypocenter?.magnitude || 0;
+                const magClass = mag >= 6 ? 'mag-high' : mag >= 5 ? 'mag-medium' : mag >= 3 ? 'mag-low' : 'mag-minor';
+                const time = new Date(e.time);
+                
+                let tsunamiBadge = '';
+                if (eq.tsunami) {
+                    const maxGrade = eq.tsunami.regions.reduce((max, r) => Math.max(max, r.grade), 0);
+                    const gradeName = TSUNAMI_CATEGORIES[maxGrade]?.name || '津波情報';
+                    const badgeClass = maxGrade >= 3 ? 'alert' : ''; // 警報以上は赤バッジ
+                    tsunamiBadge = `<span class="tsunami-badge-timeline ${badgeClass}">${gradeName.replace('津波', '')}</span>`;
+                }
+
+                return `
+                    <div class="timeline-item" id="eq-item-${eq.id}" onclick='selectEarthquakeById("${eq.id}")'>
+                        <div class="timeline-time">${time.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+                        <div class="timeline-title">
+                            <span class="magnitude-badge ${magClass}">M${mag.toFixed(1)}</span>
+                            ${e.hypocenter?.name || '震源地不明'}
+                            ${tsunamiBadge}
+                        </div>
+                        <div class="timeline-content">
+                            深さ: ${e.hypocenter?.depth || '不明'}km ${e.maxInt ? ' / 最大震度: ' + e.maxInt : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            // 選択中の地震があれば再度選択状態にする
+            if (selectedEarthquake) {
+                const item = document.getElementById(`eq-item-${selectedEarthquake.id}`);
+                if(item) item.classList.add('selected');
+            }
+        }
+        
+        function filterTimeline() {
+            displayTimeline(earthquakes);
+            updateMarkers();
+        }
+
+        function selectEarthquakeById(id) {
+            const eq = earthquakes.find(e => e.id === id);
+            if (eq) selectEarthquake(eq);
+        }
+
+        /* --- 津波情報表示 (サイドパネル) --- */
+        function displayTsunamiInfo(eq) {
+            const panel = document.getElementById('tsunamiPanel');
+            const status = document.getElementById('tsunamiStatus');
+            const list = document.getElementById('tsunamiForecastList');
+            const cardTitle = document.getElementById('tsunamiCardTitle');
+            list.innerHTML = '';
+            
+            // クラスのリセット
+            panel.classList.remove('alert');
+            status.classList.remove('warning', 'alert');
+            cardTitle.classList.remove('tsunami-warning', 'tsunami-alert');
+            cardTitle.classList.add('tsunami-warning'); // デフォルト色
+
+            if (!eq?.tsunami || eq.tsunami.regions.length === 0) {
+                panel.style.display = 'none'; // 津波情報がない場合はパネルを非表示
+                return;
+            }
+            panel.style.display = 'block';
+
+            const isAlertEnabled = document.getElementById('tsunamiAlertToggle').checked;
+            
+            let maxCategory = eq.tsunami.regions.reduce((max, r) => Math.max(max, r.grade), 0);
+
+            if (maxCategory >= 3) {
+                status.textContent = '⚠️ ' + (TSUNAMI_CATEGORIES[maxCategory]?.name || '津波警報等');
+                status.classList.add('alert');
+                cardTitle.classList.add('tsunami-alert');
+                if (isAlertEnabled) panel.classList.add('alert'); // 設定がONならパネル点滅
+            } else if (maxCategory > 0) {
+                status.textContent = TSUNAMI_CATEGORIES[maxCategory]?.name || '津波予報';
+                status.classList.add('warning');
+                cardTitle.classList.add('tsunami-warning');
+            } else {
+                status.textContent = '津波情報あり（詳細不明）';
+            }
+            
+            eq.tsunami.regions.sort((a, b) => b.grade - a.grade).forEach(r => {
+                if (r.grade === 0) return;
+                const category = TSUNAMI_CATEGORIES[r.grade]?.name || '不明';
+                const color = TSUNAMI_CATEGORIES[r.grade]?.color || '#fff';
+                const item = document.createElement('li');
+                item.className = 'tsunami-region-item';
+                item.innerHTML = `
+                    <strong>${r.name}</strong>: 
+                    <span style="color: ${color};">${category}</span> 
+                    (予想: ${r.maxHeight || '不明'})
+                `;
+                list.appendChild(item);
+            });
+        }
+
+        /* --- 津波予報マップオーバーレイ --- */
+        function displayTsunamiMapOverlay(eq) {
+            removeTsunamiMapOverlay(); // 既存のレイヤーをクリア
+            if (!eq?.tsunami || !document.getElementById('tsunamiMapOverlayToggle').checked) return;
+
+            const geoJsonFeatures = [];
+            eq.tsunami.regions.forEach(region => {
+                if (region.grade > 0 && region.points) { // pointsが存在し、グレードが0より大きい場合
+                    const coordinates = region.points.map(p => [p.latitude, p.longitude]); // Leafletは[lat, lng]
+                    const color = TSUNAMI_CATEGORIES[region.grade]?.color || '#ff9800';
+                    const fillColor = L.Util.hexToRgb(color, 0.3); // 透明度付きの塗りつぶし色
+
+                    geoJsonFeatures.push({
+                        "type": "Feature",
+                        "properties": {
+                            "name": region.name,
+                            "grade": region.grade,
+                            "category": TSUNAMI_CATEGORIES[region.grade]?.name || '不明',
+                            "maxHeight": region.maxHeight || '不明'
+                        },
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [coordinates.map(coord => [coord[1], coord[0]])] // GeoJSONは[lng, lat]
+                        }
+                    });
+                }
+            });
+
+            if (geoJsonFeatures.length > 0) {
+                tsunamiPolygonLayer = L.geoJson(geoJsonFeatures, {
+                    style: function(feature) {
+                        const color = TSUNAMI_CATEGORIES[feature.properties.grade]?.color || '#ff9800';
+                        return {
+                            fillColor: color,
+                            weight: 2,
+                            opacity: 0.8,
+                            color: color,
+                            fillOpacity: 0.3
+                        };
+                    },
+                    onEachFeature: function (feature, layer) {
+                        if (feature.properties && feature.properties.name) {
+                            layer.bindPopup(
+                                `<strong>${feature.properties.name}</strong><br>` +
+                                `予報: ${feature.properties.category}<br>` +
+                                `予想最大波高: ${feature.properties.maxHeight}`
+                            );
+                        }
+                    }
+                }).addTo(map);
+            }
+        }
+
+        function removeTsunamiMapOverlay() {
+            if (tsunamiPolygonLayer) {
+                map.removeLayer(tsunamiPolygonLayer);
+                tsunamiPolygonLayer = null;
+            }
+        }
+
+
+        /* --- エラー表示 --- */
+        function showError(msg) {
+            document.getElementById('errorMessage').textContent = msg;
+            document.getElementById('errorOverlay').classList.add('show');
+            let sec = 5;
+            const countdown = setInterval(() => {
+                document.getElementById('errorCountdown').textContent = --sec;
+                if (sec <= 0) {
+                    clearInterval(countdown);
+                    document.getElementById('errorOverlay').classList.remove('show');
+                    fetchEarthquakes(); // 自動再試行
+                }
+            }, 1000);
+        }
+
+        /* --- APIから地震データを取得 --- */
+        async function fetchEarthquakes() {
+            try {
+                // ローディング画面を表示
+                document.getElementById('loadingScreen').classList.remove('hide');
+
+                // 地震情報(551)と津波情報(552)を同時に取得
+                const res = await fetch('https://api.p2pquake.net/v2/history?codes=551,552&limit=30'); 
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                
+                const data = await res.json();
+                
+                const earthquakes_551 = data.filter(item => item.code === 551);
+                const tsunamis_552 = data.filter(item => item.code === 552);
+
+                // 地震情報に津波情報をマージする（簡易的なマッチング：IDまたは時刻が近いもの）
+                earthquakes = earthquakes_551.map(eq => {
+                    const eqTime = new Date(eq.time).getTime();
+                    // 地震発生から2分以内の津波情報を紐付ける
+                    const tsunamiInfo = tsunamis_552.find(tsu => 
+                        tsu.id === eq.id || 
+                        (new Date(tsu.time).getTime() >= eqTime && new Date(tsu.time).getTime() < eqTime + 120000)
+                    );
+                    if (tsunamiInfo) {
+                        eq.tsunami = tsunamiInfo.tsunami;
+                    }
+                    return eq;
+                });
+                
+                // タイムラインとマーカーを更新（フィルター適用）
+                displayTimeline(earthquakes);
+                updateMarkers();
+                
+                // 最初の地震を選択状態にする、または現在の選択を維持
+                if (earthquakes.length > 0) {
+                    if (!selectedEarthquake) {
+                        selectEarthquake(earthquakes[0]);
+                    } else {
+                        // 選択中の地震情報を最新情報で更新
+                        const updatedEq = earthquakes.find(e => e.id === selectedEarthquake.id);
+                        if(updatedEq) selectedEarthquake = updatedEq; // 見つからなくてもselectedEarthquakeはそのまま
+                        selectEarthquake(selectedEarthquake); // 最新情報で再選択処理
+                    }
+                } else {
+                    selectedEarthquake = null;
+                    calculateArrival(); // データがない場合は予測をリセット
+                    displayTsunamiInfo(null); // 津波情報もリセット
+                    removeTsunamiMapOverlay();
+                }
+
+                document.getElementById('loadingScreen').classList.add('hide');
+            } catch (e) {
+                document.getElementById('loadingScreen').classList.add('hide');
+                showError(e.message || 'ネットワークエラー');
+            }
+        }
+
+        // 初期ロード
+        initMap();
+        fetchEarthquakes();
+        // 30秒ごとに自動更新
+        setInterval(fetchEarthquakes, 30000);
+    </script>
+</body>
+</html>
